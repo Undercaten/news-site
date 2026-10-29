@@ -1,13 +1,11 @@
-import socket
-socket.setdefaulttimeout(5)
-
 import time
 import json
 import re
 import threading
+import os
+import requests
 import feedparser
 import schedule
-import os
 import google.generativeai as genai
 from datetime import datetime
 from flask import Flask, send_file, jsonify
@@ -17,6 +15,8 @@ app = Flask(__name__)
 api_key = os.environ.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key.strip())
+
+last_status = "Сервер запустился, ожидание первой загрузки..."
 
 SOURCES = [
     {"name": "РИА Новости", "url": "https://ria.ru/export/rss2/archive/index.xml"},
@@ -51,44 +51,55 @@ SOURCES = [
 ]
 
 def fetch_and_update_news():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Начинаю сбор новостей с 30 сайтов...", flush=True)
+    global last_status
+    last_status = f"[{datetime.now().strftime('%H:%M:%S')}] Начат сбор новостей..."
+    print(last_status, flush=True)
     
     if not api_key:
-        print("❌ Ошибка: Переменная GEMINI_API_KEY не найдена в настройках!", flush=True)
+        last_status = "❌ Ошибка: Не задан GEMINI_API_KEY в Environment Variables"
+        print(last_status, flush=True)
         return
 
     articles = []
+    # Каждому сайту дается строго 3 секунды на ответ
     for source in SOURCES:
         try:
-            feed = feedparser.parse(source["url"])
-            for entry in feed.entries[:4]:
-                articles.append({
-                    "title": entry.title,
-                    "link": entry.link,
-                    "source": source["name"]
-                })
+            res = requests.get(source["url"], timeout=3, headers={'User-Agent': 'Mozilla/5.0'})
+            if res.status_code == 200:
+                feed = feedparser.parse(res.content)
+                for entry in feed.entries[:4]:
+                    articles.append({
+                        "title": entry.title,
+                        "link": entry.link,
+                        "source": source["name"]
+                    })
         except Exception:
-            pass
+            pass # Если сайт тормозит больше 3 сек — просто пропускаем
             
-    print(f"📥 Собрано {len(articles)} статей. Отправляю Gemini...", flush=True)
+    last_status = f"📥 Собрано {len(articles)} статей. Отправляю Gemini..."
+    print(last_status, flush=True)
+
+    if not articles:
+        last_status = "❌ Ошибка: не удалось получить RSS ни с одного сайта."
+        print(last_status, flush=True)
+        return
 
     prompt = f"""
     Проанализируй список новостных статей. Сгруппируй их по одинаковым событиям.
     Оставь ТОЛЬКО те темы, которые осветили как минимум 3 РАЗНЫХ источника.
-    Верни СТРОГО чистый JSON массив без пояснений:
+    Верни СТРОГО чистый JSON массив без лишнего текста:
     [
       {{
-        "theme": "Нейтральный безоценочный заголовок события",
+        "theme": "Нейтральный заголовок",
         "articles": [
-          {{"title": "Ориг. заголовок", "link": "URL", "source": "Издание"}}
+          {{"title": "Заголовок", "link": "URL", "source": "Издание"}}
         ]
       }}
     ]
     Статьи: {json.dumps(articles, ensure_ascii=False)}
     """
 
-    # Список кандидатов названий моделей
-    models_to_try = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest']
+    models_to_try = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
     response_text = None
 
     for model_name in models_to_try:
@@ -97,30 +108,29 @@ def fetch_and_update_news():
             res = model.generate_content(prompt)
             if res and res.text:
                 response_text = res.text
-                print(f"Запрос успешно обработан моделью: {model_name}", flush=True)
+                print(f"Ответ получен от модели {model_name}", flush=True)
                 break
         except Exception as e:
-            print(f"Модель {model_name} не подсоединилась: {e}", flush=True)
+            print(f"Модель {model_name} не ответила: {e}", flush=True)
 
     if not response_text:
-        print("❌ Ошибка: ни одна из моделей Gemini не вернула ответ.", flush=True)
+        last_status = "❌ Ошибка: Gemini не вернул ответ. Проверь API-ключ."
+        print(last_status, flush=True)
         return
 
     try:
-        # Вырезаем чисто JSON массив из ответа
         match = re.search(r'\[.*\]', response_text, re.DOTALL)
-        if match:
-            clean_json = match.group(0)
-            grouped_data = json.loads(clean_json)
-        else:
-            grouped_data = json.loads(response_text)
+        clean_json = match.group(0) if match else response_text
+        grouped_data = json.loads(clean_json)
 
         with open('news_data.json', 'w', encoding='utf-8') as f:
             json.dump(grouped_data, f, ensure_ascii=False, indent=4)
             
-        print(f"✅ Успех! Создано {len(grouped_data)} сюжетов.", flush=True)
+        last_status = f"✅ Успех! Сформировано тем: {len(grouped_data)}"
+        print(last_status, flush=True)
     except Exception as e:
-        print(f"❌ Ошибка парсинга JSON: {e}", flush=True)
+        last_status = f"❌ Ошибка разбора JSON от ИИ: {e}"
+        print(last_status, flush=True)
 
 def run_scheduler():
     fetch_and_update_news()
@@ -138,6 +148,17 @@ def news_data():
     if not os.path.exists('news_data.json'):
         return jsonify([])
     return send_file('news_data.json')
+
+# Диагностическая страница
+@app.route('/status')
+def status():
+    return jsonify({"status": last_status})
+
+# Принудительный запуск обновления из браузера
+@app.route('/run-now')
+def run_now():
+    threading.Thread(target=fetch_and_update_news).start()
+    return "Запущен принудительный сбор новостей! Перейдите на /status через 15 секунд."
 
 if __name__ == '__main__':
     thread = threading.Thread(target=run_scheduler, daemon=True)

@@ -2,3 +2,4 @@ flask
 feedparser
 google-generativeai
 schedule
+requests
