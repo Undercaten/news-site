@@ -6,15 +6,19 @@ import os
 import requests
 import feedparser
 import schedule
-import google.generativeai as genai
 from datetime import datetime
 from flask import Flask, send_file, jsonify
 
+# Импортируем НОВУЮ библиотеку
+from google import genai
+
 app = Flask(__name__)
 
+# Настраиваем новый клиент
 api_key = os.environ.get("GEMINI_API_KEY")
+client = None
 if api_key:
-    genai.configure(api_key=api_key.strip())
+    client = genai.Client(api_key=api_key.strip())
 
 last_status = "Сервер запустился, ожидание первой загрузки..."
 
@@ -55,13 +59,12 @@ def fetch_and_update_news():
     last_status = f"[{datetime.now().strftime('%H:%M:%S')}] Начат сбор новостей..."
     print(last_status, flush=True)
     
-    if not api_key:
+    if not client:
         last_status = "❌ Ошибка: Не задан GEMINI_API_KEY в Environment Variables"
         print(last_status, flush=True)
         return
 
     articles = []
-    # Каждому сайту дается строго 3 секунды на ответ
     for source in SOURCES:
         try:
             res = requests.get(source["url"], timeout=3, headers={'User-Agent': 'Mozilla/5.0'})
@@ -74,7 +77,7 @@ def fetch_and_update_news():
                         "source": source["name"]
                     })
         except Exception:
-            pass # Если сайт тормозит больше 3 сек — просто пропускаем
+            pass
             
     last_status = f"📥 Собрано {len(articles)} статей. Отправляю Gemini..."
     print(last_status, flush=True)
@@ -99,26 +102,14 @@ def fetch_and_update_news():
     Статьи: {json.dumps(articles, ensure_ascii=False)}
     """
 
-    models_to_try = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
-    response_text = None
-
-    for model_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(model_name)
-            res = model.generate_content(prompt)
-            if res and res.text:
-                response_text = res.text
-                print(f"Ответ получен от модели {model_name}", flush=True)
-                break
-        except Exception as e:
-            print(f"Модель {model_name} не ответила: {e}", flush=True)
-
-    if not response_text:
-        last_status = "❌ Ошибка: Gemini не вернул ответ. Проверь API-ключ."
-        print(last_status, flush=True)
-        return
-
     try:
+        # Используем требуемую Google модель
+        response = client.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=prompt
+        )
+        response_text = response.text
+        
         match = re.search(r'\[.*\]', response_text, re.DOTALL)
         clean_json = match.group(0) if match else response_text
         grouped_data = json.loads(clean_json)
@@ -129,7 +120,7 @@ def fetch_and_update_news():
         last_status = f"✅ Успех! Сформировано тем: {len(grouped_data)}"
         print(last_status, flush=True)
     except Exception as e:
-        last_status = f"❌ Ошибка разбора JSON от ИИ: {e}"
+        last_status = f"❌ Ошибка от ИИ или разбора JSON: {e}"
         print(last_status, flush=True)
 
 def run_scheduler():
@@ -149,12 +140,10 @@ def news_data():
         return jsonify([])
     return send_file('news_data.json')
 
-# Диагностическая страница
 @app.route('/status')
 def status():
     return jsonify({"status": last_status})
 
-# Принудительный запуск обновления из браузера
 @app.route('/run-now')
 def run_now():
     threading.Thread(target=fetch_and_update_news).start()
