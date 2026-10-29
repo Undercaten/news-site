@@ -20,7 +20,6 @@ if api_key:
 last_status = "Сервер запустился, ожидание первой загрузки..."
 
 SOURCES = [
-    # Государственные / Федеральные / Телеканалы
     {"name": "РИА Новости", "url": "https://ria.ru/export/rss2/archive/index.xml"},
     {"name": "ТАСС", "url": "https://tass.ru/rss/v2.xml"},
     {"name": "RT на русском", "url": "https://russian.rt.com/rss"},
@@ -39,8 +38,6 @@ SOURCES = [
     {"name": "Regnum", "url": "https://regnum.ru/rss"},
     {"name": "Пятый канал", "url": "https://www.5-tv.ru/news/rss/"},
     {"name": "Life.ru", "url": "https://life.ru/rss"},
-    
-    # Деловые / Умеренные / IT
     {"name": "РБК", "url": "https://rssexport.rbc.ru/rbcnews/news/30/full.rss"},
     {"name": "Коммерсантъ", "url": "https://www.kommersant.ru/RSS/news.xml"},
     {"name": "Ведомости", "url": "https://www.vedomosti.ru/rss/news"},
@@ -59,8 +56,6 @@ SOURCES = [
     {"name": "N+1", "url": "https://nplus1.ru/rss"},
     {"name": "RTVI", "url": "https://rtvi.com/rss/"},
     {"name": "E1.ru", "url": "https://www.e1.ru/text/rss/"},
-    
-    # Независимые / Иностранные / Оппозиционные
     {"name": "Meduza", "url": "https://meduza.io/rss/all"},
     {"name": "BBC News", "url": "https://feeds.bbci.co.uk/russian/rss.xml"},
     {"name": "Радио Свобода", "url": "https://www.svoboda.org/api/z$qtiu_mqp"},
@@ -82,7 +77,7 @@ def fetch_and_update_news():
     print(last_status, flush=True)
     
     if not client:
-        last_status = "❌ Ошибка: Не задан GEMINI_API_KEY в Environment Variables"
+        last_status = "❌ Ошибка: Не задан GEMINI_API_KEY"
         print(last_status, flush=True)
         return
 
@@ -124,7 +119,7 @@ def fetch_and_update_news():
 
     prompt = f"""
     Проанализируй список свежих новостей. Сгруппируй их по событиям.
-    У нас уже есть текущие темы дня: {json.dumps(existing_theme_names, ensure_ascii=False)}
+    Текущие темы: {json.dumps(existing_theme_names, ensure_ascii=False)}
     ЕСЛИ новое событие относится к одной из этих тем, используй ТОЧНО ТАКОЕ ЖЕ название.
     Верни СТРОГО чистый JSON массив:
     [
@@ -138,7 +133,6 @@ def fetch_and_update_news():
     Свежие статьи: {json.dumps(articles, ensure_ascii=False)}
     """
 
-    # Система повторных попыток при ошибке 503
     max_retries = 3
     response_text = None
     
@@ -149,19 +143,17 @@ def fetch_and_update_news():
                 contents=prompt
             )
             response_text = response.text
-            break # Успешно получили ответ, выходим из цикла попыток
+            break
         except Exception as e:
             if '503' in str(e) or 'UNAVAILABLE' in str(e):
                 if attempt < max_retries - 1:
-                    print(f"⚠️ Сервер Google перегружен (503). Повтор через 10 сек... ({attempt + 1}/{max_retries})", flush=True)
+                    print(f"⚠️ Google 503. Повтор через 10 сек... ({attempt + 1}/{max_retries})", flush=True)
                     time.sleep(10)
                 else:
-                    last_status = f"❌ Ошибка: Серверы Google недоступны после {max_retries} попыток."
-                    print(last_status, flush=True)
+                    last_status = "❌ Ошибка: Серверы Google недоступны."
                     return
             else:
-                last_status = f"❌ Неизвестная ошибка ИИ: {e}"
-                print(last_status, flush=True)
+                last_status = f"❌ Ошибка ИИ: {e}"
                 return
 
     if not response_text:
@@ -173,13 +165,33 @@ def fetch_and_update_news():
         new_clusters = json.loads(clean_json)
 
         for cluster in new_clusters:
-            theme_name = cluster["theme"]
+            theme_name = cluster.get("theme", "Без темы")
+            cluster_articles = cluster.get("articles", [])
+            
             if theme_name in active_topics:
+                # МНОЖЕСТВА ДЛЯ ЗАЩИТЫ ОТ ДУБЛЕЙ ИСТОЧНИКОВ
+                existing_sources = {a["source"] for a in active_topics[theme_name]["articles"]}
                 existing_links = {a["link"] for a in active_topics[theme_name]["articles"]}
-                for art in cluster["articles"]:
-                    if art["link"] not in existing_links:
+                
+                for art in cluster_articles:
+                    src = art.get("source")
+                    lnk = art.get("link")
+                    # Проверяем, чтобы не было ни такой же ссылки, ни такого же издания
+                    if lnk not in existing_links and src not in existing_sources:
                         active_topics[theme_name]["articles"].append(art)
+                        existing_sources.add(src)
+                        existing_links.add(lnk)
             else:
+                # В новых темах тоже чистим от дублей внутри ответа ИИ
+                unique_articles = []
+                seen_sources = set()
+                for art in cluster_articles:
+                    src = art.get("source")
+                    if src not in seen_sources:
+                        unique_articles.append(art)
+                        seen_sources.add(src)
+                        
+                cluster["articles"] = unique_articles
                 cluster["added_at"] = current_time
                 active_topics[theme_name] = cluster
 
@@ -196,7 +208,7 @@ def fetch_and_update_news():
         last_status = f"✅ Успех! Активных тем за 24ч: {len(final_data)}"
         print(last_status, flush=True)
     except Exception as e:
-        last_status = f"❌ Ошибка парсинга JSON: {e}"
+        last_status = f"❌ Ошибка парсинга: {e}"
         print(last_status, flush=True)
 
 def run_scheduler():
