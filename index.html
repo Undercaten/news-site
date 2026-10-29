@@ -11,7 +11,7 @@
     <div class="max-w-4xl mx-auto p-4 py-8">
         <header class="mb-8 border-b pb-4">
             <h1 class="text-4xl font-bold text-gray-900 tracking-tight">Объектив</h1>
-            <p class="text-gray-500 mt-2">Мультиперспективный новостной агрегатор. Обновление каждые 30 минут. Показаны только те темы, о которых написали не менее 3-х разных изданий.</p>
+            <p class="text-gray-500 mt-2">Мультиперспективный новостной агрегатор. Показаны только те темы, о которых написали не менее 3-х разных изданий.</p>
         </header>
 
         <div id="loading" class="text-center py-10 text-gray-500 animate-pulse">
@@ -22,6 +22,17 @@
     </div>
 
     <script>
+        // Функция для правильного склонения слова "источник"
+        function getPlural(number, one, two, five) {
+            let n = Math.abs(number);
+            n %= 100;
+            if (n >= 5 && n <= 20) { return five; }
+            n %= 10;
+            if (n === 1) { return one; }
+            if (n >= 2 && n <= 4) { return two; }
+            return five;
+        }
+
         async function loadNews() {
             try {
                 const response = await fetch('/news_data.json?t=' + new Date().getTime());
@@ -33,7 +44,7 @@
                 container.innerHTML = '';
 
                 if (topics.length === 0) {
-                    container.innerHTML = '<p class="text-center text-gray-500">В данный момент нет значимых новостей, пересекающихся в 3+ источниках.</p>';
+                    container.innerHTML = '<p class="text-center text-gray-500">В данный момент нет активных тем с пересечением в 3+ источниках.</p>';
                     return;
                 }
 
@@ -45,16 +56,22 @@
                     topicHeader.className = 'bg-gray-100 px-6 py-4 border-b border-gray-200 flex justify-between items-center';
                     topicHeader.innerHTML = `
                         <h2 class="text-xl font-semibold text-gray-800">${topic.theme}</h2>
-                        <span class="bg-blue-100 text-blue-800 text-xs font-semibold px-2.5 py-0.5 rounded">Источников: ${topic.articles.length}</span>
+                        <span class="bg-blue-100 text-blue-800 text-xs font-semibold px-2.5 py-0.5 rounded">Всего источников: ${topic.articles.length}</span>
                     `;
                     topicCard.appendChild(topicHeader);
 
                     const articleList = document.createElement('ul');
                     articleList.className = 'divide-y divide-gray-100';
 
-                    topic.articles.forEach(article => {
+                    topic.articles.forEach((article, index) => {
                         const li = document.createElement('li');
                         li.className = 'px-6 py-4 hover:bg-gray-50 transition-colors';
+                        
+                        // Скрываем все статьи после 3-й
+                        if (index >= 3) {
+                            li.classList.add('hidden', 'extra-article');
+                        }
+                        
                         li.innerHTML = `
                             <a href="${article.link}" target="_blank" class="block">
                                 <span class="text-xs font-bold uppercase tracking-wider text-indigo-600 mb-1 block">${article.source}</span>
@@ -65,15 +82,46 @@
                     });
 
                     topicCard.appendChild(articleList);
+
+                    // Если статей больше 3, добавляем кнопку "Ещё"
+                    if (topic.articles.length > 3) {
+                        const hiddenCount = topic.articles.length - 3;
+                        const word = getPlural(hiddenCount, 'источник', 'источника', 'источников');
+                        
+                        const toggleContainer = document.createElement('div');
+                        toggleContainer.className = 'border-t border-gray-100 bg-gray-50';
+                        
+                        const toggleBtn = document.createElement('button');
+                        toggleBtn.className = 'w-full py-3 text-sm font-semibold text-indigo-600 hover:text-indigo-800 hover:bg-gray-100 transition-colors focus:outline-none';
+                        toggleBtn.innerText = `Показать ещё ${hiddenCount} ${word} ↓`;
+                        
+                        let isExpanded = false;
+                        toggleBtn.onclick = () => {
+                            isExpanded = !isExpanded;
+                            const extraItems = articleList.querySelectorAll('.extra-article');
+                            extraItems.forEach(item => {
+                                if (isExpanded) {
+                                    item.classList.remove('hidden');
+                                } else {
+                                    item.classList.add('hidden');
+                                }
+                            });
+                            toggleBtn.innerText = isExpanded ? 'Свернуть ↑' : `Показать ещё ${hiddenCount} ${word} ↓`;
+                        };
+                        
+                        toggleContainer.appendChild(toggleBtn);
+                        topicCard.appendChild(toggleContainer);
+                    }
+
                     container.appendChild(topicCard);
                 });
             } catch (error) {
-                document.getElementById('loading').innerText = "Сервер собирает первые новости. Пожалуйста, обновите страницу через пару минут.";
+                // Игнорируем ошибку при пустом запуске, ждем данные от бекенда
             }
         }
         
         loadNews();
-        setInterval(loadNews, 120000); // Автообновление ленты раз в 2 минуты
+        setInterval(loadNews, 60000); // Автообновление страницы раз в минуту
     </script>
 </body>
 </html>
