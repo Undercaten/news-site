@@ -23,6 +23,7 @@ if api_key:
 last_status = "Сервер запустился, ожидание первой загрузки..."
 
 SOURCES = [
+    # Государственные и крупные федеральные
     {"name": "РИА Новости", "url": "https://ria.ru/export/rss2/archive/index.xml"},
     {"name": "ТАСС", "url": "https://tass.ru/rss/v2.xml"},
     {"name": "RT на русском", "url": "https://russian.rt.com/rss"},
@@ -32,6 +33,7 @@ SOURCES = [
     {"name": "Взгляд", "url": "https://vz.ru/rss.xml"},
     {"name": "Царьград", "url": "https://tsargrad.tv/news/rss"},
     {"name": "Интерфакс", "url": "https://www.interfax.ru/rss.asp"},
+    # Деловые и умеренные
     {"name": "РБК", "url": "https://rssexport.rbc.ru/rbcnews/news/30/full.rss"},
     {"name": "Коммерсантъ", "url": "https://www.kommersant.ru/RSS/news.xml"},
     {"name": "Ведомости", "url": "https://www.vedomosti.ru/rss/news"},
@@ -42,6 +44,7 @@ SOURCES = [
     {"name": "Газета.Ru", "url": "https://www.gazeta.ru/export/rss/lenta.xml"},
     {"name": "Сноб", "url": "https://snob.ru/rss/"},
     {"name": "Фонтанка", "url": "https://www.fontanka.ru/fontanka.rss"},
+    # Независимые и международные
     {"name": "Meduza", "url": "https://meduza.io/rss/all"},
     {"name": "BBC News", "url": "https://feeds.bbci.co.uk/russian/rss.xml"},
     {"name": "Радио Свобода", "url": "https://www.svoboda.org/api/z$qtiu_mqp"},
