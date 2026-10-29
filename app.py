@@ -8,13 +8,10 @@ import feedparser
 import schedule
 from datetime import datetime
 from flask import Flask, send_file, jsonify
-
-# Импортируем НОВУЮ библиотеку
 from google import genai
 
 app = Flask(__name__)
 
-# Настраиваем новый клиент
 api_key = os.environ.get("GEMINI_API_KEY")
 client = None
 if api_key:
@@ -22,8 +19,9 @@ if api_key:
 
 last_status = "Сервер запустился, ожидание первой загрузки..."
 
+# Расширенный список из 50 источников
 SOURCES = [
-    # Государственные и крупные федеральные
+    # Государственные / Федеральные / Телеканалы
     {"name": "РИА Новости", "url": "https://ria.ru/export/rss2/archive/index.xml"},
     {"name": "ТАСС", "url": "https://tass.ru/rss/v2.xml"},
     {"name": "RT на русском", "url": "https://russian.rt.com/rss"},
@@ -33,7 +31,16 @@ SOURCES = [
     {"name": "Взгляд", "url": "https://vz.ru/rss.xml"},
     {"name": "Царьград", "url": "https://tsargrad.tv/news/rss"},
     {"name": "Интерфакс", "url": "https://www.interfax.ru/rss.asp"},
-    # Деловые и умеренные
+    {"name": "Вести", "url": "https://www.vesti.ru/vesti.rss"},
+    {"name": "Первый канал", "url": "https://www.1tv.ru/news/rss"},
+    {"name": "НТВ", "url": "https://www.ntv.ru/exp/news.rss"},
+    {"name": "Комсомольская правда", "url": "https://www.kp.ru/rss/all.xml"},
+    {"name": "Московский комсомолец", "url": "https://www.mk.ru/rss/news/index.xml"},
+    {"name": "АиФ", "url": "https://aif.ru/rss/all.php"},
+    {"name": "Regnum", "url": "https://regnum.ru/rss"},
+    {"name": "Пятый канал", "url": "https://www.5-tv.ru/news/rss/"},
+    {"name": "Life.ru", "url": "https://life.ru/rss"},
+    # Деловые / Умеренные / IT
     {"name": "РБК", "url": "https://rssexport.rbc.ru/rbcnews/news/30/full.rss"},
     {"name": "Коммерсантъ", "url": "https://www.kommersant.ru/RSS/news.xml"},
     {"name": "Ведомости", "url": "https://www.vedomosti.ru/rss/news"},
@@ -44,7 +51,15 @@ SOURCES = [
     {"name": "Газета.Ru", "url": "https://www.gazeta.ru/export/rss/lenta.xml"},
     {"name": "Сноб", "url": "https://snob.ru/rss/"},
     {"name": "Фонтанка", "url": "https://www.fontanka.ru/fontanka.rss"},
-    # Независимые и международные
+    {"name": "Эксперт", "url": "https://expert.ru/rss/"},
+    {"name": "Секрет Фирмы", "url": "https://secretmag.ru/export/rss.xml"},
+    {"name": "Хабр", "url": "https://habr.com/ru/rss/news/"},
+    {"name": "VC.ru", "url": "https://vc.ru/rss"},
+    {"name": "3DNews", "url": "https://3dnews.ru/news/rss/"},
+    {"name": "N+1", "url": "https://nplus1.ru/rss"},
+    {"name": "RTVI", "url": "https://rtvi.com/rss/"},
+    {"name": "E1.ru", "url": "https://www.e1.ru/text/rss/"},
+    # Независимые / Иностранные / Оппозиционные
     {"name": "Meduza", "url": "https://meduza.io/rss/all"},
     {"name": "BBC News", "url": "https://feeds.bbci.co.uk/russian/rss.xml"},
     {"name": "Радио Свобода", "url": "https://www.svoboda.org/api/z$qtiu_mqp"},
@@ -55,6 +70,9 @@ SOURCES = [
     {"name": "Голос Америки", "url": "https://www.golosameriki.com/api/z-pqqier-q"},
     {"name": "The Insider", "url": "https://theins.ru/feed"},
     {"name": "The Moscow Times", "url": "https://www.themoscowtimes.com/ru/rss"},
+    {"name": "ОВД-Инфо", "url": "https://ovd.news/rss.xml"},
+    {"name": "Холод", "url": "https://holod.media/feed/"},
+    {"name": "Бумага", "url": "https://paperpaper.ru/feed/"},
 ]
 
 def fetch_and_update_news():
@@ -67,13 +85,31 @@ def fetch_and_update_news():
         print(last_status, flush=True)
         return
 
+    # 1. Загружаем старые темы и удаляем те, которым больше 24 часов
+    current_time = time.time()
+    active_topics = {}
+    existing_theme_names = []
+
+    if os.path.exists('news_data.json'):
+        try:
+            with open('news_data.json', 'r', encoding='utf-8') as f:
+                old_data = json.load(f)
+                for topic in old_data:
+                    # Если теме меньше 24 часов (86400 секунд)
+                    if current_time - topic.get("added_at", current_time) < 86400:
+                        active_topics[topic["theme"]] = topic
+                        existing_theme_names.append(topic["theme"])
+        except Exception:
+            pass
+
+    # 2. Собираем свежие статьи
     articles = []
     for source in SOURCES:
         try:
             res = requests.get(source["url"], timeout=3, headers={'User-Agent': 'Mozilla/5.0'})
             if res.status_code == 200:
                 feed = feedparser.parse(res.content)
-                for entry in feed.entries[:4]:
+                for entry in feed.entries[:3]:
                     articles.append({
                         "title": entry.title,
                         "link": entry.link,
@@ -82,18 +118,18 @@ def fetch_and_update_news():
         except Exception:
             pass
             
-    last_status = f"📥 Собрано {len(articles)} статей. Отправляю Gemini..."
+    last_status = f"📥 Собрано {len(articles)} новых статей. Обработка ИИ..."
     print(last_status, flush=True)
 
     if not articles:
-        last_status = "❌ Ошибка: не удалось получить RSS ни с одного сайта."
-        print(last_status, flush=True)
         return
 
+    # 3. Отправляем ИИ с учетом уже существующих тем
     prompt = f"""
-    Проанализируй список новостных статей. Сгруппируй их по одинаковым событиям.
-    Оставь ТОЛЬКО те темы, которые осветили как минимум 3 РАЗНЫХ источника.
-    Верни СТРОГО чистый JSON массив без лишнего текста:
+    Проанализируй список свежих новостей. Сгруппируй их по событиям (минимум 3 источника на событие).
+    У нас уже есть текущие темы дня: {json.dumps(existing_theme_names, ensure_ascii=False)}
+    ЕСЛИ новое событие относится к одной из этих тем, используй ТОЧНО ТАКОЕ ЖЕ название.
+    Верни СТРОГО чистый JSON массив:
     [
       {{
         "theme": "Нейтральный заголовок",
@@ -102,33 +138,54 @@ def fetch_and_update_news():
         ]
       }}
     ]
-    Статьи: {json.dumps(articles, ensure_ascii=False)}
+    Свежие статьи: {json.dumps(articles, ensure_ascii=False)}
     """
 
     try:
-        # Используем требуемую Google модель
         response = client.models.generate_content(
             model='gemini-3.8-flash',
             contents=prompt
         )
-        response_text = response.text
         
-        match = re.search(r'\[.*\]', response_text, re.DOTALL)
-        clean_json = match.group(0) if match else response_text
-        grouped_data = json.loads(clean_json)
+        match = re.search(r'\[.*\]', response.text, re.DOTALL)
+        clean_json = match.group(0) if match else response.text
+        new_clusters = json.loads(clean_json)
+
+        # 4. Объединяем старые и новые данные без дубликатов статей
+        for cluster in new_clusters:
+            theme_name = cluster["theme"]
+            if theme_name in active_topics:
+                # Добавляем только новые ссылки
+                existing_links = {a["link"] for a in active_topics[theme_name]["articles"]}
+                for art in cluster["articles"]:
+                    if art["link"] not in existing_links:
+                        active_topics[theme_name]["articles"].append(art)
+            else:
+                # Создаем новую тему с меткой времени
+                cluster["added_at"] = current_time
+                active_topics[theme_name] = cluster
+
+        # Сортируем темы: свежие выше, оставляем только те, где 3+ статей
+        final_data = []
+        for t in active_topics.values():
+            if len(t["articles"]) >= 3:
+                final_data.append(t)
+                
+        final_data.sort(key=lambda x: x.get("added_at", 0), reverse=True)
 
         with open('news_data.json', 'w', encoding='utf-8') as f:
-            json.dump(grouped_data, f, ensure_ascii=False, indent=4)
+            json.dump(final_data, f, ensure_ascii=False, indent=4)
             
-        last_status = f"✅ Успех! Сформировано тем: {len(grouped_data)}"
+        last_status = f"✅ Успех! Активных тем за 24ч: {len(final_data)}"
         print(last_status, flush=True)
     except Exception as e:
-        last_status = f"❌ Ошибка от ИИ или разбора JSON: {e}"
+        last_status = f"❌ Ошибка ИИ: {e}"
         print(last_status, flush=True)
 
 def run_scheduler():
     fetch_and_update_news()
-    schedule.every(30).minutes.do(fetch_and_update_news)
+    # Изменено на 15 минут
+    schedule.every(15).minutes.do(fetch_and_update_news)
     while True:
         schedule.run_pending()
         time.sleep(60)
@@ -150,7 +207,7 @@ def status():
 @app.route('/run-now')
 def run_now():
     threading.Thread(target=fetch_and_update_news).start()
-    return "Запущен принудительный сбор новостей! Перейдите на /status через 15 секунд."
+    return "Сбор запущен. Проверьте /status через 30 секунд."
 
 if __name__ == '__main__':
     thread = threading.Thread(target=run_scheduler, daemon=True)
