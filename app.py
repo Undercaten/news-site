@@ -118,15 +118,19 @@ def fetch_and_update_news():
         return
 
     prompt = f"""
-    Проанализируй список свежих новостей. Сгруппируй их по событиям.
+    Ты - точный и строгий новостной редактор. Твоя задача: сгруппировать новости, которые описывают СТРОГО ОДНО И ТО ЖЕ конкретное событие.
+    НЕ объединяй разные события в одну кучу (например, разные заявления политиков или разные аварии). У каждого источника бери точное название.
     Текущие темы: {json.dumps(existing_theme_names, ensure_ascii=False)}
-    ЕСЛИ новое событие относится к одной из этих тем, используй ТОЧНО ТАКОЕ ЖЕ название.
+    ЕСЛИ новое событие является развитием одной из текущих тем, используй ТОЧНО ТАКОЕ ЖЕ название.
+
+    Для каждого события выбери ОДНУ категорию из списка: "Политика", "Технологии", "Наука", "Общество".
     Верни СТРОГО чистый JSON массив:
     [
       {{
-        "theme": "Нейтральный заголовок",
+        "theme": "Нейтральный заголовок конкретного события",
+        "category": "Категория",
         "articles": [
-          {{"title": "Заголовок", "link": "URL", "source": "Издание"}}
+          {{"title": "Заголовок", "link": "URL", "source": "Точное название издания"}}
         ]
       }}
     ]
@@ -166,23 +170,21 @@ def fetch_and_update_news():
 
         for cluster in new_clusters:
             theme_name = cluster.get("theme", "Без темы")
+            category_name = cluster.get("category", "Общество")
             cluster_articles = cluster.get("articles", [])
             
             if theme_name in active_topics:
-                # МНОЖЕСТВА ДЛЯ ЗАЩИТЫ ОТ ДУБЛЕЙ ИСТОЧНИКОВ
                 existing_sources = {a["source"] for a in active_topics[theme_name]["articles"]}
                 existing_links = {a["link"] for a in active_topics[theme_name]["articles"]}
                 
                 for art in cluster_articles:
                     src = art.get("source")
                     lnk = art.get("link")
-                    # Проверяем, чтобы не было ни такой же ссылки, ни такого же издания
                     if lnk not in existing_links and src not in existing_sources:
                         active_topics[theme_name]["articles"].append(art)
                         existing_sources.add(src)
                         existing_links.add(lnk)
             else:
-                # В новых темах тоже чистим от дублей внутри ответа ИИ
                 unique_articles = []
                 seen_sources = set()
                 for art in cluster_articles:
@@ -193,6 +195,7 @@ def fetch_and_update_news():
                         
                 cluster["articles"] = unique_articles
                 cluster["added_at"] = current_time
+                cluster["category"] = category_name
                 active_topics[theme_name] = cluster
 
         final_data = []
