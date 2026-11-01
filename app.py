@@ -89,7 +89,7 @@ def fetch_single_feed(source):
     return articles
 
 def fetch_and_update_news():
-    if not api_key or not collection:
+    if not api_key or collection is None:
         return "Ошибка: не заданы ключи API или MongoDB"
 
     current_time = time.time()
@@ -215,7 +215,7 @@ def home():
 # Эмулируем отдачу JSON файла для фронтенда
 @app.route('/news_data.json')
 def news_data():
-    if collection:
+    if collection is not None:
         db_doc = collection.find_one({"_id": "news_cluster"})
         if db_doc and "data" in db_doc:
             return jsonify(db_doc["data"])
