@@ -1,16 +1,23 @@
 import time
 import json
+import re
+import threading
 import os
 import requests
 import feedparser
-import asyncio
-import aiohttp
+import schedule
 from datetime import datetime
 from flask import Flask, send_file, jsonify
+from google import genai
 
 app = Flask(__name__)
 
 api_key = os.environ.get("GEMINI_API_KEY")
+client = None
+if api_key:
+    client = genai.Client(api_key=api_key.strip())
+
+last_status = "Сервер запустился, ожидание первой загрузки..."
 
 SOURCES = [
     # ==========================================
@@ -194,29 +201,15 @@ SOURCES = [
     {"name": "Башинформ", "url": "https://www.bashinform.ru/rss/all"}
 ]
 
-# Асинхронная функция скачивания одной ленты
-async def fetch_feed_async(session, source):
-    try:
-        async with session.get(source["url"], timeout=10) as response:
-            if response.status == 200:
-                content = await response.read()
-                feed = feedparser.parse(content)
-                return [{"title": entry.title, "link": entry.link, "source": source["name"]} for entry in feed.entries[:3]]
-    except Exception as e:
-        print(f"Ошибка парсинга {source['name']}: {e}", flush=True)
-    return []
-
-# Асинхронный запуск всех лент одновременно
-async def fetch_all_sources():
-    async with aiohttp.ClientSession(headers={'User-Agent': 'Mozilla/5.0'}) as session:
-        tasks = [fetch_feed_async(session, src) for src in SOURCES]
-        results = await asyncio.gather(*tasks)
-        # Объединяем списки
-        return [article for sublist in results if sublist for article in sublist]
-
 def fetch_and_update_news():
-    if not api_key:
-        return "❌ Ошибка: не задан GEMINI_API_KEY"
+    global last_status
+    last_status = f"[{datetime.now().strftime('%H:%M:%S')}] Начат сбор новостей..."
+    print(last_status, flush=True)
+    
+    if not client:
+        last_status = "❌ Ошибка: Не задан GEMINI_API_KEY"
+        print(last_status, flush=True)
+        return
 
     current_time = time.time()
     active_topics = {}
@@ -233,57 +226,77 @@ def fetch_and_update_news():
         except Exception:
             pass
 
-    # Запускаем молниеносный асинхронный сбор
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    articles = loop.run_until_complete(fetch_all_sources())
-    loop.close()
+    articles = []
+    for source in SOURCES:
+        try:
+            res = requests.get(source["url"], timeout=3, headers={'User-Agent': 'Mozilla/5.0'})
+            if res.status_code == 200:
+                feed = feedparser.parse(res.content)
+                for entry in feed.entries[:3]:
+                    articles.append({
+                        "title": entry.title,
+                        "link": entry.link,
+                        "source": source["name"]
+                    })
+        except Exception:
+            pass
+            
+    last_status = f"📥 Собрано {len(articles)} новых статей. Обработка ИИ..."
+    print(last_status, flush=True)
 
     if not articles:
-        return "Нет новых статей."
+        return
 
     prompt = f"""
-    Ты - новостной редактор. Сгруппируй новости, описывающие СТРОГО ОДНО И ТО ЖЕ событие.
+    Ты - точный и строгий новостной редактор. Твоя задача: сгруппировать новости, которые описывают СТРОГО ОДНО И ТО ЖЕ конкретное событие.
+    НЕ объединяй разные события в одну кучу (например, разные заявления политиков или разные аварии). У каждого источника бери точное название.
     Текущие темы: {json.dumps(existing_theme_names, ensure_ascii=False)}
-    Если событие относится к существующей теме, используй ТОЧНО ТАКОЕ ЖЕ название.
-    Выбери категорию: "Политика", "Технологии", "Наука", "Общество".
+    ЕСЛИ новое событие является развитием одной из текущих тем, используй ТОЧНО ТАКОЕ ЖЕ название.
 
-    Верни валидный массив JSON:
+    Для каждого события выбери ОДНУ категорию из списка: "Политика", "Технологии", "Наука", "Общество".
+    Верни СТРОГО чистый JSON массив:
     [
       {{
-        "theme": "Заголовок",
+        "theme": "Нейтральный заголовок конкретного события",
         "category": "Категория",
         "articles": [
-          {{"title": "Название", "link": "URL", "source": "Издание"}}
+          {{"title": "Заголовок", "link": "URL", "source": "Точное название издания"}}
         ]
       }}
     ]
-
-    Статьи: {json.dumps(articles, ensure_ascii=False)}
+    Свежие статьи: {json.dumps(articles, ensure_ascii=False)}
     """
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json"}
-    }
+    max_retries = 3
+    response_text = None
     
-    try:
-        # Запрос к нейросети отправляем синхронно (через requests), так как он всего один
-        res = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload, timeout=90)
-        if res.status_code == 200:
-            data = res.json()
-            response_text = data['candidates'][0]['content']['parts'][0]['text']
-        else:
-            return f"❌ Ошибка Gemini: {res.status_code} - {res.text}"
-    except Exception as e:
-        return f"❌ Ошибка сети: {e}"
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=prompt
+            )
+            response_text = response.text
+            break
+        except Exception as e:
+            if '503' in str(e) or 'UNAVAILABLE' in str(e):
+                if attempt < max_retries - 1:
+                    print(f"⚠️ Google 503. Повтор через 10 сек... ({attempt + 1}/{max_retries})", flush=True)
+                    time.sleep(10)
+                else:
+                    last_status = "❌ Ошибка: Серверы Google недоступны."
+                    return
+            else:
+                last_status = f"❌ Ошибка ИИ: {e}"
+                return
 
     if not response_text:
-        return "❌ Пустой ответ"
+        return
 
     try:
-        new_clusters = json.loads(response_text)
+        match = re.search(r'\[.*\]', response_text, re.DOTALL)
+        clean_json = match.group(0) if match else response_text
+        new_clusters = json.loads(clean_json)
 
         for cluster in new_clusters:
             theme_name = cluster.get("theme", "Без темы")
@@ -325,9 +338,18 @@ def fetch_and_update_news():
         with open('news_data.json', 'w', encoding='utf-8') as f:
             json.dump(final_data, f, ensure_ascii=False, indent=4)
             
-        return f"✅ Успех! Тем: {len(final_data)}"
+        last_status = f"✅ Успех! Активных тем за 24ч: {len(final_data)}"
+        print(last_status, flush=True)
     except Exception as e:
-        return f"❌ Ошибка JSON: {e}"
+        last_status = f"❌ Ошибка парсинга: {e}"
+        print(last_status, flush=True)
+
+def run_scheduler():
+    fetch_and_update_news()
+    schedule.every(15).minutes.do(fetch_and_update_news)
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
 
 @app.route('/')
 def home():
@@ -339,10 +361,17 @@ def news_data():
         return jsonify([])
     return send_file('news_data.json')
 
+@app.route('/status')
+def status():
+    return jsonify({"status": last_status})
+
 @app.route('/run-now')
 def run_now():
-    status = fetch_and_update_news()
-    return jsonify({"status": status})
+    threading.Thread(target=fetch_and_update_news).start()
+    return "Сбор запущен. Проверьте /status через 30 секунд."
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+    thread = threading.Thread(target=run_scheduler, daemon=True)
+    thread.start()
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
