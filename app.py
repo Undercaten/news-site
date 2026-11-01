@@ -1,22 +1,17 @@
 import time
 import json
 import os
+import threading
 import requests
 import feedparser
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, send_file, jsonify
-from pymongo import MongoClient
-import certifi
 
 app = Flask(__name__)
 
 api_key = os.environ.get("GEMINI_API_KEY")
-mongo_uri = os.environ.get("MONGO_URI")
-
-# Подключение к облачной MongoDB (certifi предотвращает ошибки SSL на Render)
-db_client = MongoClient(mongo_uri, tlsCAFile=certifi.where()) if mongo_uri else None
-collection = db_client['vashinews']['articles'] if db_client else None
+is_updating = False  # Флаг, чтобы не запустить два сбора одновременно
 
 SOURCES = [
     {"name": "РИА Новости", "url": "https://ria.ru/export/rss2/archive/index.xml"},
@@ -68,14 +63,12 @@ SOURCES = [
     {"name": "ОВД-Инфо", "url": "https://ovd.news/rss.xml"},
     {"name": "Холод", "url": "https://holod.media/feed/"},
     {"name": "Бумага", "url": "https://paperpaper.ru/feed/"},
-    {"name": "Михаил Смирнов", "url": "https://www.michael-smirnov.ru/feed/"}
 ]
 
 def fetch_single_feed(source):
     articles = []
     try:
-        # Серверы Render в США, поэтому скачиваем напрямую без прокси
-        res = requests.get(source["url"], timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+        res = requests.get(source["url"], timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
         if res.status_code == 200:
             feed = feedparser.parse(res.content)
             for entry in feed.entries[:3]:
@@ -84,30 +77,38 @@ def fetch_single_feed(source):
                     "link": entry.link,
                     "source": source["name"]
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Ошибка парсинга {source['name']}: {e}", flush=True)
     return articles
 
-def fetch_and_update_news():
-    if not api_key or collection is None:
-        return "Ошибка: не заданы ключи API или MongoDB"
+def background_update_task():
+    global is_updating
+    
+    if not api_key:
+        print("❌ Ошибка: не задан GEMINI_API_KEY", flush=True)
+        is_updating = False
+        return
 
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Начат фоновый сбор новостей...", flush=True)
     current_time = time.time()
     active_topics = {}
     existing_theme_names = []
 
-    # Чтение прошлых тем из облачной БД
-    db_doc = collection.find_one({"_id": "news_cluster"})
-    if db_doc and "data" in db_doc:
-        old_data = db_doc["data"]
-        for topic in old_data:
-            if current_time - topic.get("added_at", current_time) < 86400:
-                active_topics[topic["theme"]] = topic
-                existing_theme_names.append(topic["theme"])
+    # Чтение существующего файла
+    if os.path.exists('news_data.json'):
+        try:
+            with open('news_data.json', 'r', encoding='utf-8') as f:
+                old_data = json.load(f)
+                for topic in old_data:
+                    if current_time - topic.get("added_at", current_time) < 86400:
+                        active_topics[topic["theme"]] = topic
+                        existing_theme_names.append(topic["theme"])
+        except Exception as e:
+            print(f"Ошибка чтения news_data.json: {e}", flush=True)
 
     articles = []
     
-    # Многопоточный сбор
+    # Жесткий лимит в 5 потоков, чтобы не убить память Render (ОЗУ 512МБ)
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(fetch_single_feed, src) for src in SOURCES]
         for future in as_completed(futures):
@@ -116,7 +117,11 @@ def fetch_and_update_news():
                 articles.extend(result)
 
     if not articles:
-        return "Нет новых статей"
+        print("Нет новых статей для обработки.", flush=True)
+        is_updating = False
+        return
+
+    print(f"Собрано {len(articles)} статей. Отправка в Gemini...", flush=True)
 
     prompt = f"""
     Ты - новостной редактор. Сгруппируй новости, описывающие СТРОГО ОДНО И ТО ЖЕ событие.
@@ -144,88 +149,84 @@ def fetch_and_update_news():
         "generationConfig": {"responseMimeType": "application/json"}
     }
     
-    # Прямой запрос к Gemini без прокси
     try:
-        res = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload, timeout=45)
+        res = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload, timeout=60)
         if res.status_code == 200:
             data = res.json()
             response_text = data['candidates'][0]['content']['parts'][0]['text']
-        else:
-            return f"Ошибка Gemini: {res.status_code}"
-    except Exception as e:
-        return f"Ошибка сети: {e}"
-
-    if not response_text:
-        return "Пустой ответ"
-
-    try:
-        new_clusters = json.loads(response_text)
-
-        for cluster in new_clusters:
-            theme_name = cluster.get("theme", "Без темы")
-            category_name = cluster.get("category", "Общество")
-            cluster_articles = cluster.get("articles", [])
             
-            if theme_name in active_topics:
-                existing_sources = {a["source"] for a in active_topics[theme_name]["articles"]}
-                existing_links = {a["link"] for a in active_topics[theme_name]["articles"]}
-                
-                for art in cluster_articles:
-                    src = art.get("source")
-                    lnk = art.get("link")
-                    if lnk not in existing_links and src not in existing_sources:
-                        active_topics[theme_name]["articles"].append(art)
-                        existing_sources.add(src)
-                        existing_links.add(lnk)
-            else:
-                unique_articles = []
-                seen_sources = set()
-                for art in cluster_articles:
-                    src = art.get("source")
-                    if src not in seen_sources:
-                        unique_articles.append(art)
-                        seen_sources.add(src)
-                        
-                cluster["articles"] = unique_articles
-                cluster["added_at"] = current_time
-                cluster["category"] = category_name
-                active_topics[theme_name] = cluster
+            new_clusters = json.loads(response_text)
 
-        final_data = []
-        for t in active_topics.values():
-            if len(t["articles"]) >= 3:
-                final_data.append(t)
+            for cluster in new_clusters:
+                theme_name = cluster.get("theme", "Без темы")
+                category_name = cluster.get("category", "Общество")
+                cluster_articles = cluster.get("articles", [])
                 
-        final_data.sort(key=lambda x: x.get("added_at", 0), reverse=True)
+                if theme_name in active_topics:
+                    existing_sources = {a["source"] for a in active_topics[theme_name]["articles"]}
+                    existing_links = {a["link"] for a in active_topics[theme_name]["articles"]}
+                    
+                    for art in cluster_articles:
+                        src = art.get("source")
+                        lnk = art.get("link")
+                        if lnk not in existing_links and src not in existing_sources:
+                            active_topics[theme_name]["articles"].append(art)
+                            existing_sources.add(src)
+                            existing_links.add(lnk)
+                else:
+                    unique_articles = []
+                    seen_sources = set()
+                    for art in cluster_articles:
+                        src = art.get("source")
+                        if src not in seen_sources:
+                            unique_articles.append(art)
+                            seen_sources.add(src)
+                            
+                    cluster["articles"] = unique_articles
+                    cluster["added_at"] = current_time
+                    cluster["category"] = category_name
+                    active_topics[theme_name] = cluster
 
-        # Сохранение в базу данных вместо файла
-        collection.update_one(
-            {"_id": "news_cluster"},
-            {"$set": {"data": final_data, "updated_at": current_time}},
-            upsert=True
-        )
-        return "Успешно обновлено!"
+            final_data = [t for t in active_topics.values() if len(t["articles"]) >= 3]
+            final_data.sort(key=lambda x: x.get("added_at", 0), reverse=True)
+
+            # Запись напрямую в файл
+            with open('news_data.json', 'w', encoding='utf-8') as f:
+                json.dump(final_data, f, ensure_ascii=False, indent=4)
+                
+            print(f"✅ Успех! Сохранено тем: {len(final_data)}", flush=True)
+
+        else:
+            print(f"❌ Ошибка Gemini: {res.status_code} - {res.text}", flush=True)
+            
     except Exception as e:
-        return f"Ошибка JSON: {e}"
+        print(f"❌ Системная ошибка: {e}", flush=True)
+        
+    finally:
+        is_updating = False
 
 @app.route('/')
 def home():
     return send_file('index.html')
 
-# Эмулируем отдачу JSON файла для фронтенда
 @app.route('/news_data.json')
 def news_data():
-    if collection is not None:
-        db_doc = collection.find_one({"_id": "news_cluster"})
-        if db_doc and "data" in db_doc:
-            return jsonify(db_doc["data"])
-    return jsonify([])
+    if not os.path.exists('news_data.json'):
+        return jsonify([])
+    return send_file('news_data.json')
 
-# Маршрут для внешнего пинга cron-job
 @app.route('/run-now')
 def run_now():
-    status = fetch_and_update_news()
-    return jsonify({"status": status})
+    global is_updating
+    if is_updating:
+        return jsonify({"status": "Сбор уже идет в фоновом режиме, подождите..."})
+    
+    is_updating = True
+    # Запускаем сбор новостей как независимый фоновый процесс
+    thread = threading.Thread(target=background_update_task, daemon=True)
+    thread.start()
+    
+    return jsonify({"status": "Сбор успешно запущен в фоне! Результаты появятся в течение минуты."})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))

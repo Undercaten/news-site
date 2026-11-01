@@ -1,6 +1,4 @@
 flask
 feedparser
 requests
-pymongo
-certifi
 gunicorn
