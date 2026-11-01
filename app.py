@@ -1,23 +1,22 @@
 import time
 import json
-import re
-import threading
 import os
 import requests
 import feedparser
-import schedule
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, send_file, jsonify
-from google import genai
+from pymongo import MongoClient
+import certifi
 
 app = Flask(__name__)
 
 api_key = os.environ.get("GEMINI_API_KEY")
-client = None
-if api_key:
-    client = genai.Client(api_key=api_key.strip())
+mongo_uri = os.environ.get("MONGO_URI")
 
-last_status = "Сервер запустился, ожидание первой загрузки..."
+# Подключение к облачной MongoDB (certifi предотвращает ошибки SSL на Render)
+db_client = MongoClient(mongo_uri, tlsCAFile=certifi.where()) if mongo_uri else None
+collection = db_client['vashinews']['articles'] if db_client else None
 
 SOURCES = [
     {"name": "РИА Новости", "url": "https://ria.ru/export/rss2/archive/index.xml"},
@@ -69,104 +68,98 @@ SOURCES = [
     {"name": "ОВД-Инфо", "url": "https://ovd.news/rss.xml"},
     {"name": "Холод", "url": "https://holod.media/feed/"},
     {"name": "Бумага", "url": "https://paperpaper.ru/feed/"},
+    {"name": "Михаил Смирнов", "url": "https://www.michael-smirnov.ru/feed/"}
 ]
 
+def fetch_single_feed(source):
+    articles = []
+    try:
+        # Серверы Render в США, поэтому скачиваем напрямую без прокси
+        res = requests.get(source["url"], timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+        if res.status_code == 200:
+            feed = feedparser.parse(res.content)
+            for entry in feed.entries[:3]:
+                articles.append({
+                    "title": entry.title,
+                    "link": entry.link,
+                    "source": source["name"]
+                })
+    except Exception:
+        pass
+    return articles
+
 def fetch_and_update_news():
-    global last_status
-    last_status = f"[{datetime.now().strftime('%H:%M:%S')}] Начат сбор новостей..."
-    print(last_status, flush=True)
-    
-    if not client:
-        last_status = "❌ Ошибка: Не задан GEMINI_API_KEY"
-        print(last_status, flush=True)
-        return
+    if not api_key or not collection:
+        return "Ошибка: не заданы ключи API или MongoDB"
 
     current_time = time.time()
     active_topics = {}
     existing_theme_names = []
 
-    if os.path.exists('news_data.json'):
-        try:
-            with open('news_data.json', 'r', encoding='utf-8') as f:
-                old_data = json.load(f)
-                for topic in old_data:
-                    if current_time - topic.get("added_at", current_time) < 86400:
-                        active_topics[topic["theme"]] = topic
-                        existing_theme_names.append(topic["theme"])
-        except Exception:
-            pass
+    # Чтение прошлых тем из облачной БД
+    db_doc = collection.find_one({"_id": "news_cluster"})
+    if db_doc and "data" in db_doc:
+        old_data = db_doc["data"]
+        for topic in old_data:
+            if current_time - topic.get("added_at", current_time) < 86400:
+                active_topics[topic["theme"]] = topic
+                existing_theme_names.append(topic["theme"])
 
     articles = []
-    for source in SOURCES:
-        try:
-            res = requests.get(source["url"], timeout=3, headers={'User-Agent': 'Mozilla/5.0'})
-            if res.status_code == 200:
-                feed = feedparser.parse(res.content)
-                for entry in feed.entries[:3]:
-                    articles.append({
-                        "title": entry.title,
-                        "link": entry.link,
-                        "source": source["name"]
-                    })
-        except Exception:
-            pass
-            
-    last_status = f"📥 Собрано {len(articles)} новых статей. Обработка ИИ..."
-    print(last_status, flush=True)
+    
+    # Многопоточный сбор
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = [executor.submit(fetch_single_feed, src) for src in SOURCES]
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                articles.extend(result)
 
     if not articles:
-        return
+        return "Нет новых статей"
 
     prompt = f"""
-    Ты - точный и строгий новостной редактор. Твоя задача: сгруппировать новости, которые описывают СТРОГО ОДНО И ТО ЖЕ конкретное событие.
-    НЕ объединяй разные события в одну кучу (например, разные заявления политиков или разные аварии). У каждого источника бери точное название.
+    Ты - новостной редактор. Сгруппируй новости, описывающие СТРОГО ОДНО И ТО ЖЕ событие.
     Текущие темы: {json.dumps(existing_theme_names, ensure_ascii=False)}
-    ЕСЛИ новое событие является развитием одной из текущих тем, используй ТОЧНО ТАКОЕ ЖЕ название.
+    Если событие относится к существующей теме, используй ТОЧНО ТАКОЕ ЖЕ название.
+    Выбери категорию: "Политика", "Технологии", "Наука", "Общество".
 
-    Для каждого события выбери ОДНУ категорию из списка: "Политика", "Технологии", "Наука", "Общество".
-    Верни СТРОГО чистый JSON массив:
+    Верни валидный массив JSON:
     [
       {{
-        "theme": "Нейтральный заголовок конкретного события",
+        "theme": "Заголовок",
         "category": "Категория",
         "articles": [
-          {{"title": "Заголовок", "link": "URL", "source": "Точное название издания"}}
+          {{"title": "Название", "link": "URL", "source": "Издание"}}
         ]
       }}
     ]
-    Свежие статьи: {json.dumps(articles, ensure_ascii=False)}
+
+    Статьи: {json.dumps(articles, ensure_ascii=False)}
     """
 
-    max_retries = 3
-    response_text = None
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json"}
+    }
     
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model='gemini-3.8-flash',
-                contents=prompt
-            )
-            response_text = response.text
-            break
-        except Exception as e:
-            if '503' in str(e) or 'UNAVAILABLE' in str(e):
-                if attempt < max_retries - 1:
-                    print(f"⚠️ Google 503. Повтор через 10 сек... ({attempt + 1}/{max_retries})", flush=True)
-                    time.sleep(10)
-                else:
-                    last_status = "❌ Ошибка: Серверы Google недоступны."
-                    return
-            else:
-                last_status = f"❌ Ошибка ИИ: {e}"
-                return
+    # Прямой запрос к Gemini без прокси
+    try:
+        res = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload, timeout=45)
+        if res.status_code == 200:
+            data = res.json()
+            response_text = data['candidates'][0]['content']['parts'][0]['text']
+        else:
+            return f"Ошибка Gemini: {res.status_code}"
+    except Exception as e:
+        return f"Ошибка сети: {e}"
 
     if not response_text:
-        return
+        return "Пустой ответ"
 
     try:
-        match = re.search(r'\[.*\]', response_text, re.DOTALL)
-        clean_json = match.group(0) if match else response_text
-        new_clusters = json.loads(clean_json)
+        new_clusters = json.loads(response_text)
 
         for cluster in new_clusters:
             theme_name = cluster.get("theme", "Без темы")
@@ -205,43 +198,34 @@ def fetch_and_update_news():
                 
         final_data.sort(key=lambda x: x.get("added_at", 0), reverse=True)
 
-        with open('news_data.json', 'w', encoding='utf-8') as f:
-            json.dump(final_data, f, ensure_ascii=False, indent=4)
-            
-        last_status = f"✅ Успех! Активных тем за 24ч: {len(final_data)}"
-        print(last_status, flush=True)
+        # Сохранение в базу данных вместо файла
+        collection.update_one(
+            {"_id": "news_cluster"},
+            {"$set": {"data": final_data, "updated_at": current_time}},
+            upsert=True
+        )
+        return "Успешно обновлено!"
     except Exception as e:
-        last_status = f"❌ Ошибка парсинга: {e}"
-        print(last_status, flush=True)
-
-def run_scheduler():
-    fetch_and_update_news()
-    schedule.every(15).minutes.do(fetch_and_update_news)
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+        return f"Ошибка JSON: {e}"
 
 @app.route('/')
 def home():
     return send_file('index.html')
 
+# Эмулируем отдачу JSON файла для фронтенда
 @app.route('/news_data.json')
 def news_data():
-    if not os.path.exists('news_data.json'):
-        return jsonify([])
-    return send_file('news_data.json')
+    if collection:
+        db_doc = collection.find_one({"_id": "news_cluster"})
+        if db_doc and "data" in db_doc:
+            return jsonify(db_doc["data"])
+    return jsonify([])
 
-@app.route('/status')
-def status():
-    return jsonify({"status": last_status})
-
+# Маршрут для внешнего пинга cron-job
 @app.route('/run-now')
 def run_now():
-    threading.Thread(target=fetch_and_update_news).start()
-    return "Сбор запущен. Проверьте /status через 30 секунд."
+    status = fetch_and_update_news()
+    return jsonify({"status": status})
 
 if __name__ == '__main__':
-    thread = threading.Thread(target=run_scheduler, daemon=True)
-    thread.start()
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))

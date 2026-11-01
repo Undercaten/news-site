@@ -1,5 +1,6 @@
 flask
 feedparser
-schedule
 requests
-google-genai
+pymongo
+certifi
+gunicorn

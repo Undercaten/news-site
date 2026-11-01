@@ -3,225 +3,164 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VashiNews | Мультиперспективный агрегатор</title>
+    <title>VashiNews</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow-x: hidden; }
-        .slide-in { animation: slideInRight 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-        @keyframes slideInRight {
-            from { opacity: 0; transform: translateX(20px); }
+        /* Темный скроллбар */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #000; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+        
+        /* Плавное раскрытие дополнительных источников */
+        details > summary { list-style: none; cursor: pointer; }
+        details > summary::-webkit-details-marker { display: none; }
+        details[open] summary ~ * { animation: slideRight 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        @keyframes slideRight {
+            from { opacity: 0; transform: translateX(-10px); }
             to { opacity: 1; transform: translateX(0); }
         }
-        /* Плавное появление шторки */
-        .drawer-open { transform: translateX(0) !important; }
-        .overlay-open { display: block !important; }
     </style>
 </head>
-<body class="bg-gray-100 text-gray-900 min-h-screen relative">
-    
-    <!-- Боковая шторка -->
-    <div id="drawer-overlay" class="fixed inset-0 bg-gray-900 bg-opacity-50 z-40 hidden transition-opacity" onclick="toggleDrawer()"></div>
-    <div id="drawer" class="fixed top-0 left-0 h-full w-64 bg-white shadow-2xl z-50 transform -translate-x-full transition-transform duration-300 ease-in-out">
-        <div class="p-6 border-b border-gray-200 flex justify-between items-center">
-            <h2 class="text-2xl font-bold text-indigo-700">Рубрики</h2>
-            <button onclick="toggleDrawer()" class="text-gray-500 hover:text-gray-800 text-2xl font-bold">&times;</button>
-        </div>
-        <nav class="p-4 space-y-2" id="category-nav">
-            <button onclick="setCategory('Все')" class="cat-btn w-full text-left px-4 py-3 rounded-lg font-medium bg-indigo-50 text-indigo-700 transition-colors" data-cat="Все">📰 Все новости</button>
-            <button onclick="setCategory('Политика')" class="cat-btn w-full text-left px-4 py-3 rounded-lg font-medium text-gray-600 hover:bg-gray-50 transition-colors" data-cat="Политика">🏛 Политика</button>
-            <button onclick="setCategory('Технологии')" class="cat-btn w-full text-left px-4 py-3 rounded-lg font-medium text-gray-600 hover:bg-gray-50 transition-colors" data-cat="Технологии">💻 Технологии</button>
-            <button onclick="setCategory('Наука')" class="cat-btn w-full text-left px-4 py-3 rounded-lg font-medium text-gray-600 hover:bg-gray-50 transition-colors" data-cat="Наука">🔬 Наука</button>
-            <button onclick="setCategory('Общество')" class="cat-btn w-full text-left px-4 py-3 rounded-lg font-medium text-gray-600 hover:bg-gray-50 transition-colors" data-cat="Общество">👥 Общество</button>
-        </nav>
-    </div>
+<body class="bg-black text-gray-300 min-h-screen flex font-sans antialiased overflow-x-hidden">
 
-    <div class="max-w-7xl mx-auto p-4 py-8">
-        <!-- Шапка с кнопкой меню -->
-        <header class="mb-10 relative flex flex-col md:flex-row items-center justify-center border-b border-gray-300 pb-6">
-            <button onclick="toggleDrawer()" class="absolute left-0 top-2 md:top-1 p-2 text-gray-600 hover:text-indigo-600 focus:outline-none">
-                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"></path>
-                </svg>
+    <!-- Боковая шторка (Скрыта на мобильных по умолчанию) -->
+    <aside id="sidebar" class="w-64 bg-zinc-950 border-r border-zinc-900 fixed inset-y-0 left-0 z-40 transform -translate-x-full md:translate-x-0 transition-transform duration-300 ease-in-out shadow-2xl">
+        <div class="p-5 flex justify-between items-center border-b border-zinc-900">
+            <h1 class="text-xl font-bold text-white tracking-wide">VashiNews</h1>
+            <button id="close-btn" class="md:hidden text-zinc-500 hover:text-white text-2xl">&times;</button>
+        </div>
+        <nav class="p-4 space-y-2">
+            <button onclick="filterNews('Все')" class="w-full text-left px-4 py-2 rounded-lg bg-zinc-900 text-white font-medium hover:bg-zinc-800 transition">🌍 Все новости</button>
+            <button onclick="filterNews('Политика')" class="w-full text-left px-4 py-2 rounded-lg text-zinc-400 hover:bg-zinc-900 hover:text-white transition">🏛 Политика</button>
+            <button onclick="filterNews('Технологии')" class="w-full text-left px-4 py-2 rounded-lg text-zinc-400 hover:bg-zinc-900 hover:text-white transition">💻 Технологии</button>
+            <button onclick="filterNews('Общество')" class="w-full text-left px-4 py-2 rounded-lg text-zinc-400 hover:bg-zinc-900 hover:text-white transition">👥 Общество</button>
+            <button onclick="filterNews('Наука')" class="w-full text-left px-4 py-2 rounded-lg text-zinc-400 hover:bg-zinc-900 hover:text-white transition">🔬 Наука</button>
+        </nav>
+    </aside>
+
+    <!-- Затемнение фона на мобильных при открытой шторке -->
+    <div id="overlay" class="fixed inset-0 bg-black/60 z-30 hidden md:hidden backdrop-blur-sm transition-opacity"></div>
+
+    <!-- Основной контент -->
+    <main class="flex-1 md:ml-64 flex flex-col min-h-screen">
+        <header class="sticky top-0 z-20 bg-black/80 backdrop-blur-md border-b border-zinc-900 p-4 flex items-center gap-4">
+            <button id="menu-btn" class="md:hidden text-zinc-400 hover:text-white">
+                <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
             </button>
-            <div class="text-center mt-2 md:mt-0">
-                <h1 class="text-4xl md:text-5xl font-extrabold text-indigo-700 tracking-tight mb-2">VashiNews</h1>
-                <p id="header-desc" class="text-gray-600 text-base md:text-lg">Объективная картина дня. Показаны все новости.</p>
-            </div>
+            <h2 id="current-category" class="text-lg font-semibold text-white">Все новости</h2>
         </header>
 
-        <div id="loading" class="text-center py-12 text-gray-500 text-xl animate-pulse font-medium">
-            Загрузка свежих новостей...
+        <div class="p-4 sm:p-6 flex-1">
+            <div id="news-container" class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 sm:gap-6">
+                <!-- Карточки генерируются здесь -->
+            </div>
         </div>
-
-        <!-- Контейнер для блоков -->
-        <div id="news-container" class="space-y-6 flex flex-col items-center w-full"></div>
-    </div>
+    </main>
 
     <script>
-        let allTopics = [];
-        let currentCategory = 'Все';
+        let allNews = [];
 
         // Управление шторкой
-        function toggleDrawer() {
-            document.getElementById('drawer').classList.toggle('drawer-open');
-            document.getElementById('drawer-overlay').classList.toggle('overlay-open');
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('overlay');
+        const menuBtn = document.getElementById('menu-btn');
+        const closeBtn = document.getElementById('close-btn');
+
+        function toggleSidebar() {
+            sidebar.classList.toggle('-translate-x-full');
+            overlay.classList.toggle('hidden');
         }
 
-        // Смена категории
-        function setCategory(cat) {
-            currentCategory = cat;
-            document.querySelectorAll('.cat-btn').forEach(btn => {
-                if (btn.dataset.cat === cat) {
-                    btn.className = 'cat-btn w-full text-left px-4 py-3 rounded-lg font-medium bg-indigo-50 text-indigo-700 transition-colors';
-                } else {
-                    btn.className = 'cat-btn w-full text-left px-4 py-3 rounded-lg font-medium text-gray-600 hover:bg-gray-50 transition-colors';
-                }
-            });
-            
-            document.getElementById('header-desc').innerText = cat === 'Все' ? 
-                'Объективная картина дня. Показаны все новости.' : 
-                `Рубрика: ${cat}. Темы с 3+ источниками.`;
-                
-            toggleDrawer();
-            renderNews();
+        menuBtn.addEventListener('click', toggleSidebar);
+        closeBtn.addEventListener('click', toggleSidebar);
+        overlay.addEventListener('click', toggleSidebar);
+
+        // Форматирование времени
+        function timeAgo(timestamp) {
+            const diff = Math.floor((Date.now() / 1000) - timestamp);
+            if (diff < 3600) return `${Math.floor(diff / 60)} мин назад`;
+            return `${Math.floor(diff / 3600)} ч назад`;
         }
 
-        function getPlural(number, one, two, five) {
-            let n = Math.abs(number);
-            n %= 100;
-            if (n >= 5 && n <= 20) { return five; }
-            n %= 10;
-            if (n === 1) { return one; }
-            if (n >= 2 && n <= 4) { return two; }
-            return five;
-        }
-
-        async function loadNews() {
-            try {
-                const response = await fetch('/news_data.json?t=' + new Date().getTime());
-                if (response.ok) {
-                    allTopics = await response.json();
-                    document.getElementById('loading').style.display = 'none';
-                    renderNews();
-                }
-            } catch (error) {}
-        }
-
-        function renderNews() {
+        // Отрисовка карточек
+        function renderNews(newsArray) {
             const container = document.getElementById('news-container');
             container.innerHTML = '';
-
-            const filteredTopics = currentCategory === 'Все' ? allTopics : allTopics.filter(t => t.category === currentCategory);
-
-            if (filteredTopics.length === 0) {
-                container.innerHTML = `<p class="text-center text-gray-500 text-lg w-full">В рубрике «${currentCategory}» сейчас нет тем с пересечением в 3+ источниках.</p>`;
+            
+            if (newsArray.length === 0) {
+                container.innerHTML = '<p class="text-zinc-500">В этой категории пока нет новостей.</p>';
                 return;
             }
 
-            filteredTopics.forEach(topic => {
-                // Обертка с анимацией ширины (max-w-2xl для центра, max-w-5xl для расширения)
-                const wrapper = document.createElement('div');
-                wrapper.className = 'transition-all duration-500 ease-in-out flex flex-col md:flex-row gap-4 w-full max-w-2xl mx-auto';
-
-                // Левый (или центральный) основной блок
-                const mainCard = document.createElement('div');
-                mainCard.className = 'bg-white rounded-xl shadow-md border border-gray-200 flex-1 flex flex-col overflow-hidden min-w-[300px]';
+            newsArray.forEach(item => {
+                const mainArticle = item.articles[0];
+                const otherArticles = item.articles.slice(1);
                 
-                const topicHeader = document.createElement('div');
-                topicHeader.className = 'bg-indigo-50 px-6 py-5 border-b border-gray-200';
-                
-                const catLabel = topic.category ? `<span class="inline-block px-2 py-1 mb-2 text-xs font-semibold text-indigo-800 bg-indigo-200 rounded">${topic.category}</span>` : '';
-                topicHeader.innerHTML = `${catLabel}<h2 class="text-2xl font-bold text-gray-900 leading-tight">${topic.theme}</h2>`;
-                mainCard.appendChild(topicHeader);
-
-                const mainArticleList = document.createElement('ul');
-                mainArticleList.className = 'divide-y divide-gray-100 flex-grow';
-
-                const topArticles = topic.articles.slice(0, 3);
-                const extraArticles = topic.articles.slice(3);
-
-                topArticles.forEach(article => {
-                    mainArticleList.innerHTML += `
-                        <li class="px-6 py-4 hover:bg-gray-50 transition-colors">
-                            <a href="${article.link}" target="_blank" class="block">
-                                <span class="text-xs font-bold uppercase tracking-wider text-indigo-600 mb-1 block">${article.source}</span>
-                                <h3 class="text-gray-800 font-medium">${article.title}</h3>
-                            </a>
-                        </li>
+                let sourcesHtml = '';
+                if (otherArticles.length > 0) {
+                    const linksHtml = otherArticles.map(a => 
+                        `<a href="${a.link}" target="_blank" class="block py-2 text-sm text-zinc-400 hover:text-blue-400 border-t border-zinc-800 transition pl-4">
+                            ↳ ${a.source}: ${a.title}
+                        </a>`
+                    ).join('');
+                    
+                    sourcesHtml = `
+                        <details class="mt-3 group">
+                            <summary class="text-sm font-medium text-blue-500 hover:text-blue-400 select-none flex items-center gap-1">
+                                <svg class="w-4 h-4 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                                Еще ${otherArticles.length} источника
+                            </summary>
+                            <div class="mt-2 pl-2 border-l-2 border-zinc-800">
+                                ${linksHtml}
+                            </div>
+                        </details>
                     `;
-                });
-                mainCard.appendChild(mainArticleList);
-
-                // Правый блок (Скрыт по умолчанию)
-                let extraCard = null;
-                
-                if (extraArticles.length > 0) {
-                    const hiddenCount = extraArticles.length;
-                    const word = getPlural(hiddenCount, 'источник', 'источника', 'источников');
-
-                    extraCard = document.createElement('div');
-                    extraCard.className = 'hidden md:w-[350px] lg:w-[400px] bg-gray-50 rounded-xl shadow-inner border border-gray-200 flex-col overflow-hidden shrink-0';
-                    
-                    const extraHeader = document.createElement('div');
-                    extraHeader.className = 'bg-gray-200 px-5 py-3 border-b border-gray-300';
-                    extraHeader.innerHTML = `<h3 class="text-sm font-bold text-gray-700 uppercase tracking-wider">Ещё мнения</h3>`;
-                    extraCard.appendChild(extraHeader);
-
-                    const extraArticleList = document.createElement('ul');
-                    extraArticleList.className = 'divide-y divide-gray-200 overflow-y-auto max-h-[400px] flex-grow';
-                    
-                    extraArticles.forEach(article => {
-                        extraArticleList.innerHTML += `
-                            <li class="px-5 py-3 hover:bg-white transition-colors">
-                                <a href="${article.link}" target="_blank" class="block">
-                                    <span class="text-xs font-bold uppercase text-gray-500 mb-1 block">${article.source}</span>
-                                    <h4 class="text-sm text-gray-900 leading-snug">${article.title}</h4>
-                                </a>
-                            </li>
-                        `;
-                    });
-                    extraCard.appendChild(extraArticleList);
-
-                    const toggleContainer = document.createElement('div');
-                    toggleContainer.className = 'bg-white border-t border-gray-100 p-2 mt-auto';
-                    
-                    const toggleBtn = document.createElement('button');
-                    toggleBtn.className = 'w-full py-3 text-sm font-bold text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-lg transition-colors focus:outline-none';
-                    toggleBtn.innerHTML = `Показать ещё ${hiddenCount} ${word} <span class="ml-1 text-lg leading-none">→</span>`;
-                    
-                    let isExpanded = false;
-                    toggleBtn.onclick = () => {
-                        isExpanded = !isExpanded;
-                        if (isExpanded) {
-                            // Расширяем контейнер, что заставляет левый блок сдвинуться
-                            wrapper.classList.remove('max-w-2xl');
-                            wrapper.classList.add('max-w-5xl');
-                            extraCard.classList.remove('hidden');
-                            extraCard.classList.add('flex', 'slide-in');
-                            toggleBtn.innerHTML = `Свернуть источники <span class="ml-1 text-lg leading-none">←</span>`;
-                        } else {
-                            // Сужаем контейнер, блок едет в центр
-                            wrapper.classList.add('max-w-2xl');
-                            wrapper.classList.remove('max-w-5xl');
-                            extraCard.classList.add('hidden');
-                            extraCard.classList.remove('flex', 'slide-in');
-                            toggleBtn.innerHTML = `Показать ещё ${hiddenCount} ${word} <span class="ml-1 text-lg leading-none">→</span>`;
-                        }
-                    };
-                    
-                    toggleContainer.appendChild(toggleBtn);
-                    mainCard.appendChild(toggleContainer);
                 }
 
-                wrapper.appendChild(mainCard);
-                if (extraCard) wrapper.appendChild(extraCard);
-                
-                container.appendChild(wrapper);
+                const card = `
+                    <div class="bg-zinc-950 border border-zinc-900 rounded-xl p-5 hover:border-zinc-700 transition-colors shadow-lg flex flex-col h-full">
+                        <div class="flex justify-between items-start mb-3">
+                            <span class="text-xs font-semibold px-2 py-1 bg-zinc-900 text-zinc-400 rounded">${item.category}</span>
+                            <span class="text-xs text-zinc-500">${timeAgo(item.added_at)}</span>
+                        </div>
+                        <h3 class="text-lg font-bold text-white mb-2 leading-snug">
+                            <a href="${mainArticle.link}" target="_blank" class="hover:text-blue-400 transition">${item.theme}</a>
+                        </h3>
+                        <p class="text-sm text-zinc-500 mb-4">${mainArticle.source}</p>
+                        <div class="mt-auto">
+                            ${sourcesHtml}
+                        </div>
+                    </div>
+                `;
+                container.innerHTML += card;
             });
         }
-        
-        loadNews();
-        setInterval(loadNews, 60000); 
+
+        // Фильтрация
+        window.filterNews = function(category) {
+            document.getElementById('current-category').innerText = category === 'Все' ? 'Все новости' : category;
+            if (window.innerWidth < 768) toggleSidebar();
+            
+            if (category === 'Все') {
+                renderNews(allNews);
+            } else {
+                renderNews(allNews.filter(n => n.category === category));
+            }
+        };
+
+        // Инициализация
+        async function fetchNews() {
+            try {
+                const res = await fetch('/news_data.json');
+                allNews = await res.json();
+                renderNews(allNews);
+            } catch (e) {
+                console.error('Ошибка загрузки новостей', e);
+            }
+        }
+
+        fetchNews();
     </script>
 </body>
 </html>
