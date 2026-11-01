@@ -108,7 +108,7 @@ def fetch_and_update_news():
     articles = []
     
     # Многопоточный сбор
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(fetch_single_feed, src) for src in SOURCES]
         for future in as_completed(futures):
             result = future.result()
