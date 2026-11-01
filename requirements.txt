@@ -1,4 +1,5 @@
 flask
 feedparser
+schedule
 requests
-gunicorn
+google-genai
