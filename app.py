@@ -7,7 +7,6 @@ import requests
 import feedparser
 import schedule
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, send_file, jsonify
 from google import genai
 
@@ -202,23 +201,6 @@ SOURCES = [
     {"name": "Башинформ", "url": "https://www.bashinform.ru/rss/all"}
 ]
 
-# Выделяем загрузку одного сайта в отдельную функцию для многопоточности
-def fetch_single_feed(source):
-    local_articles = []
-    try:
-        res = requests.get(source["url"], timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
-        if res.status_code == 200:
-            feed = feedparser.parse(res.content)
-            for entry in feed.entries[:3]:
-                local_articles.append({
-                    "title": entry.title,
-                    "link": entry.link,
-                    "source": source["name"]
-                })
-    except Exception:
-        pass
-    return local_articles
-
 def fetch_and_update_news():
     global last_status
     last_status = f"[{datetime.now().strftime('%H:%M:%S')}] Начат сбор новостей..."
@@ -245,14 +227,19 @@ def fetch_and_update_news():
             pass
 
     articles = []
-    
-    # Запускаем параллельное скачивание (10 потоков)
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(fetch_single_feed, src) for src in SOURCES]
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                articles.extend(result)
+    for source in SOURCES:
+        try:
+            res = requests.get(source["url"], timeout=3, headers={'User-Agent': 'Mozilla/5.0'})
+            if res.status_code == 200:
+                feed = feedparser.parse(res.content)
+                for entry in feed.entries[:3]:
+                    articles.append({
+                        "title": entry.title,
+                        "link": entry.link,
+                        "source": source["name"]
+                    })
+        except Exception:
+            pass
             
     last_status = f"📥 Собрано {len(articles)} новых статей. Обработка ИИ..."
     print(last_status, flush=True)
@@ -359,8 +346,7 @@ def fetch_and_update_news():
 
 def run_scheduler():
     fetch_and_update_news()
-    # Изменено на 10 минут
-    schedule.every(10).minutes.do(fetch_and_update_news)
+    schedule.every(15).minutes.do(fetch_and_update_news)
     while True:
         schedule.run_pending()
         time.sleep(60)
